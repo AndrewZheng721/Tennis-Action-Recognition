@@ -1,4 +1,4 @@
-# Tennis-3D-Demo
+# Tennis-Action-Recognition
 
 高位网球转播的球场、球轨迹、落地界内界外。测试入口是 `test_court_ball.py`。`tennis_high_angle_01.mp4` 只做测试，不进训练。
 
