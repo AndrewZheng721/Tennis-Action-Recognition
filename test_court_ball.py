@@ -33,6 +33,7 @@ from src.court.court_line_detector import (
     read_frame_at,
 )
 from src.score.cntext import put_cn, zone_cn
+from src.score.match import play_match
 from src.score.pipeline import analyze_score
 from src.score.players import PlayerTracker, default_person_weights, draw_players, lift_players
 from src.score.traj3d import reconstruct_ball_3d
@@ -277,9 +278,10 @@ def main():
                     b["side"] = side
                     n_line += 1
                 print("line calls flipped to in:", n_line)
+            score["match"] = play_match(score["bounces"], score.get("hits"))
             with open(os.path.join(args.out, "score.json"), "w", encoding="utf-8") as f:
                 json.dump(score, f, ensure_ascii=False, indent=2)
-            print("bounces:", score["num_bounces"])
+            print("bounces:", score["num_bounces"], "points:", len(score["match"]["points"]), score["match"]["final"])
         traj3d = None
         if not args.skip_3d:
             traj3d = reconstruct_ball_3d(
@@ -374,6 +376,11 @@ def main():
                     last_event_fid = frame_id
                 if last_event and frame_id - last_event_fid <= 45:
                     put_cn(vis, last_event, (20, 150), (0, 255, 255), 0.85, 2)
+                if score and score.get("match"):
+                    nxt = next((p for p in score["match"]["points"] if p["frame_id"] > frame_id), None)
+                    line = nxt["before"] if nxt else score["match"]["final"]
+                    mark = nxt["tag"] if nxt else ""
+                    put_cn(vis, f"{line}  {mark}".strip(), (20, 78), (0, 255, 255), 0.7, 2)
             else:
                 cv2.putText(
                     vis,
