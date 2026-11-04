@@ -125,7 +125,7 @@ class Match:
             self._finish_game(side)
 
 
-def play_match(bounces, hits=None, server="near", best_of=3):
+def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frames=None):
     match = Match(server, best_of)
     events = [("bounce", b) for b in bounces] + [("hit", h) for h in (hits or [])]
     events.sort(key=lambda it: int(it[1]["frame_id"]))
@@ -133,22 +133,44 @@ def play_match(bounces, hits=None, server="near", best_of=3):
     faults = 0
     last_side = None
     points = []
-    for kind, ev in events:
+
+    def live(i, fid):
+        if n_frames and fid + confirm >= int(n_frames):
+            return True
+        for kind, nxt in events[i + 1 :]:
+            gap = int(nxt["frame_id"]) - fid
+            if gap > confirm:
+                return False
+            if kind == "hit" or nxt.get("in_singles"):
+                return True
+        return False
+
+    for i, (kind, ev) in enumerate(events):
         if match.done:
             break
+        fid = int(ev["frame_id"])
         if kind == "hit":
             if phase != "serve":
                 last_side = None
             continue
+        side = ev.get("side")
+        inn = bool(ev.get("in_singles"))
         tag = match.tag()
         text = match.text()
-        fid = int(ev["frame_id"])
         if phase == "serve":
             box = _serve_box(match.server, match._played())
-            if ev.get("in_singles") and ev.get("serve_zone") == box:
+            if inn and ev.get("serve_zone") == box:
                 phase = "rally"
                 faults = 0
-                last_side = ev.get("side")
+                last_side = side
+                continue
+            if live(i, fid):
+                if inn:
+                    phase = "rally"
+                    faults = 0
+                    last_side = side
+                continue
+            if inn and side == match.server:
                 continue
             faults += 1
             if faults < 2:
@@ -156,17 +178,20 @@ def play_match(bounces, hits=None, server="near", best_of=3):
             winner = _other(match.server)
             reason = "双误"
             faults = 0
-        else:
-            side = ev.get("side")
-            if not ev.get("in_singles"):
-                winner = side
-                reason = "出界"
-            elif last_side and side == last_side:
-                winner = _other(side)
-                reason = "二跳"
-            else:
+        elif not inn:
+            if live(i, fid):
+                continue
+            winner = side
+            reason = "出界"
+        elif last_side and side == last_side:
+            if live(i, fid):
                 last_side = side
                 continue
+            winner = _other(side)
+            reason = "二跳"
+        else:
+            last_side = side
+            continue
         points.append(
             {
                 "frame_id": fid,
