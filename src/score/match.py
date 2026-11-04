@@ -125,6 +125,53 @@ class Match:
             self._finish_game(side)
 
 
+def infer_server(players=None, filled=None, bounces=None):
+    votes = {"near": 0, "far": 0}
+    n = min(20, len(filled or []), len(players or []))
+    for i in range(n):
+        box = (filled[i] or {}).get(1)
+        if not box or len(box) < 4:
+            continue
+        u = (float(box[0]) + float(box[2])) * 0.5
+        v = (float(box[1]) + float(box[3])) * 0.5
+        best, best_d = None, 1e18
+        for p in players[i]:
+            b = p.get("bbox") or []
+            side = p.get("side")
+            if len(b) < 4 or side not in votes:
+                continue
+            if not (b[0] - 36 <= u <= b[2] + 36 and b[1] - 36 <= v <= b[3] + 36):
+                continue
+            d = (u - (b[0] + b[2]) * 0.5) ** 2 + (v - (b[1] + b[3]) * 0.5) ** 2
+            if d < best_d:
+                best, best_d = side, d
+        if best:
+            votes[best] += 1
+    if votes["near"] != votes["far"] and max(votes.values()) >= 2:
+        return "far" if votes["far"] > votes["near"] else "near"
+    xs = {"near": [], "far": []}
+    for fr in (players or [])[:30]:
+        for p in fr:
+            xyz = p.get("xyz")
+            side = p.get("side")
+            if xyz and side in xs:
+                xs[side].append(abs(float(xyz[0])))
+    med = {}
+    for side, arr in xs.items():
+        if len(arr) >= 5:
+            arr = sorted(arr)
+            med[side] = arr[len(arr) // 2]
+    if len(med) == 2 and abs(med["near"] - med["far"]) >= 1.0:
+        return "near" if med["near"] < med["far"] else "far"
+    for b in bounces or []:
+        z = b.get("serve_zone") or ""
+        if z.startswith("near"):
+            return "far"
+        if z.startswith("far"):
+            return "near"
+    return "near"
+
+
 def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frames=None):
     match = Match(server, best_of)
     events = [("bounce", b) for b in bounces] + [("hit", h) for h in (hits or [])]

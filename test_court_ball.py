@@ -33,7 +33,7 @@ from src.court.court_line_detector import (
     read_frame_at,
 )
 from src.score.cntext import put_cn, zone_cn
-from src.score.match import play_match
+from src.score.match import infer_server, play_match
 from src.score.pipeline import analyze_score
 from src.score.players import PlayerTracker, default_person_weights, draw_players, lift_players
 from src.score.traj3d import reconstruct_ball_3d
@@ -278,15 +278,17 @@ def main():
                     b["side"] = side
                     n_line += 1
                 print("line calls flipped to in:", n_line)
+            server = infer_server(pose_lifted, filled, score["bounces"])
             score["match"] = play_match(
                 score["bounces"],
                 score.get("hits"),
+                server=server,
                 confirm=max(45, int(round(1.5 * fps))),
                 n_frames=total,
             )
             with open(os.path.join(args.out, "score.json"), "w", encoding="utf-8") as f:
                 json.dump(score, f, ensure_ascii=False, indent=2)
-            print("bounces:", score["num_bounces"], "points:", len(score["match"]["points"]), score["match"]["final"])
+            print("server:", server, "bounces:", score["num_bounces"], "points:", len(score["match"]["points"]), score["match"]["final"])
         traj3d = None
         if not args.skip_3d:
             traj3d = reconstruct_ball_3d(
