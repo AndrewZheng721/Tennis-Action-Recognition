@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 
 import cv2
 import numpy as np
@@ -7,7 +8,7 @@ from tqdm import tqdm
 
 from .match import play_match
 
-MODES = ("yolo26", "rtmpose", "rtmo", "vitpose")
+MODES = ("yolo26", "rtmpose", "rtmo", "vitpose", "racket")
 _RTMPOSE = (
     "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/"
     "rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip"
@@ -17,6 +18,7 @@ _RTMO = (
     "rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.zip"
 )
 _VITPOSE = "https://huggingface.co/JunkyByte/easy_ViTPose/resolve/main/onnx/coco/vitpose-b-coco.onnx"
+_CFG = os.path.join(os.path.dirname(__file__), "configs")
 
 
 def _ball_uv(item):
@@ -171,6 +173,125 @@ def _mark(flags, poses, mode, fid, uv, players, paired):
             flags[mode][p["side"]].add(fid)
 
 
+def _assign_side(center, players):
+    best, best_d = None, 1e18
+    for p in players:
+        b = [float(v) for v in p["bbox"][:4]]
+        h = max(1.0, b[3] - b[1])
+        cx = (b[0] + b[2]) * 0.5
+        cy = b[1] + 0.35 * h
+        d = (center[0] - cx) ** 2 + (center[1] - cy) ** 2
+        if d < best_d and d <= (1.2 * h) ** 2:
+            best, best_d = p["side"], d
+    return best
+
+
+def _ckpt(name):
+    dest = os.path.join("weights", "racket", name)
+    if os.path.isfile(dest) and os.path.getsize(dest) > 1000:
+        return os.path.abspath(dest)
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as e:
+        raise RuntimeError("缺少 huggingface_hub。先执行 pip install huggingface_hub") from e
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    cached = hf_hub_download("linfeng302/RacketVision-Models", f"checkpoints/{name}", repo_type="model")
+    shutil.copy2(cached, dest)
+    return os.path.abspath(dest)
+
+
+def _load_racket():
+    try:
+        import torch
+        from mmdet.apis import inference_detector, init_detector
+        from mmpose.apis import inference_topdown, init_model
+    except ImportError as e:
+        raise RuntimeError(
+            '球拍模型需要 mmdet 和 mmpose。先执行 pip install -U openmim huggingface_hub && '
+            'mim install "mmengine>=0.10.7" "mmcv>=2.0.0rc4,<2.2.0" "mmdet>=3.0.0,<3.3.0" "mmpose>=1.1.0"'
+        ) from e
+    orig = torch.load
+
+    def _load(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return orig(*args, **kwargs)
+
+    torch.load = _load
+    try:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        det = init_detector(os.path.join(_CFG, "rtmdet_m_racket_infer.py"), _ckpt("epoch_300.pth"), device=device)
+        pose = init_model(os.path.join(_CFG, "rtmpose_m_racket_infer.py"), _ckpt("best_PCK_epoch_90.pth"), device=device)
+        det.eval()
+        pose.eval()
+    finally:
+        torch.load = orig
+
+    def run(img):
+        det_result = inference_detector(det, img)
+        inst = det_result.pred_instances
+        bboxes = inst.bboxes.detach().cpu().numpy()
+        scores = inst.scores.detach().cpu().numpy()
+        labels = inst.labels.detach().cpu().numpy()
+        keep = (labels == 2) & (scores >= 0.3)
+        bboxes = bboxes[keep]
+        scores = scores[keep]
+        if len(bboxes) == 0:
+            return []
+        order = np.argsort(-scores)[:4]
+        bboxes = bboxes[order]
+        pose_results = inference_topdown(pose, img, bboxes)
+        out = []
+        for i, pred in enumerate(pose_results):
+            out.append(
+                {
+                    "bbox": [float(v) for v in bboxes[i]],
+                    "keypoints": pred.pred_instances.keypoints[0].detach().cpu().numpy(),
+                    "scores": pred.pred_instances.keypoint_scores[0].detach().cpu().numpy(),
+                }
+            )
+        return out
+
+    return run
+
+
+def _mark_racket(flags, poses, fid, uv, players, rackets):
+    poses["racket"][fid] = {}
+    by_side = {"near": [], "far": []}
+    for r in rackets:
+        bb = r["bbox"]
+        side = _assign_side(((bb[0] + bb[2]) * 0.5, (bb[1] + bb[3]) * 0.5), players)
+        if side:
+            by_side[side].append(r)
+    for side, rs in by_side.items():
+        best, best_d = None, 1e18
+        for r in rs:
+            pts = []
+            for i, xy in enumerate(r["keypoints"]):
+                if float(r["scores"][i]) >= 0.3:
+                    pts.append((float(xy[0]), float(xy[1])))
+            if not pts:
+                b = r["bbox"]
+                pts = [((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5)]
+            d = min((x - uv[0]) ** 2 + (y - uv[1]) ** 2 for x, y in pts)
+            if d < best_d:
+                best, best_d = (pts, d), d
+        pts, d = best
+        span = max(
+            max(p[0] for p in pts) - min(p[0] for p in pts),
+            max(p[1] for p in pts) - min(p[1] for p in pts),
+            12.0,
+        )
+        near = d <= max(20.0, 0.55 * span) ** 2
+        poses["racket"][fid][side] = [
+            sum(p[0] for p in pts) / len(pts),
+            sum(p[1] for p in pts) / len(pts),
+            near,
+            pts,
+        ]
+        if near:
+            flags["racket"][side].add(fid)
+
+
 def collect_contact(cap, filled, players):
     try:
         yolo = _load_yolo()
@@ -179,6 +300,7 @@ def collect_contact(cap, filled, players):
         vitpose = _load_vitpose()
     except ImportError as e:
         raise RuntimeError("缺少 rtmlib。先执行 pip install rtmlib onnxruntime-gpu") from e
+    racket = _load_racket()
     flags = {m: {"near": set(), "far": set()} for m in MODES}
     poses = {m: {} for m in MODES}
     n = min(len(filled), len(players))
@@ -199,6 +321,7 @@ def collect_contact(cap, filled, players):
         _mark(flags, poses, "rtmo", fid, uv, pls, _match(*rtmo(frame), pls))
         vk, vs = _as_people(*vitpose(frame, boxes))
         _mark(flags, poses, "vitpose", fid, uv, pls, {p["side"]: (vk[i], vs[i]) for i, p in enumerate(pls) if i < len(vk)})
+        _mark_racket(flags, poses, fid, uv, pls, racket(frame))
     return flags, poses
 
 

@@ -23,6 +23,7 @@ import json
 import os
 
 import cv2
+import numpy as np
 from tqdm import tqdm
 
 from src.ball.tracknet_tracker import create_ball_tracker, default_ball_weights
@@ -81,7 +82,7 @@ def parse_args():
     parser.add_argument("--skip-pose", action="store_true")
     parser.add_argument("--pose-weights", default=None, help="person 检测权重，默认 yolo26m.pt")
     parser.add_argument("--bounce-weights", default=None)
-    parser.add_argument("--ablation", action="store_true", help="yolo26-pose、RTMPose、RTMO、ViTPose 四组对照")
+    parser.add_argument("--ablation", action="store_true", help="四个姿态模型加球拍位置对照")
     return parser.parse_args()
 
 
@@ -342,11 +343,13 @@ def main():
                 fps,
                 (width, height),
             )
+        cols = 2
+        compare_rows = (len(ablation["modes"]) + cols - 1) // cols
         compare_writer = cv2.VideoWriter(
             os.path.join(args.out, "overlay_compare.mp4"),
             cv2.VideoWriter_fourcc(*"mp4v"),
             fps,
-            (width // 2 * 2, height // 2 * 2),
+            (width // 2 * cols, height // 2 * compare_rows),
         )
     trail = []
     shot_set = set(shot_frames)
@@ -448,12 +451,15 @@ def main():
                     for side, wrist in (pose_marks.get(mode, {}).get(frame_id) or {}).items():
                         color = (0, 255, 0) if wrist[2] else (0, 255, 255)
                         cv2.circle(panel, (int(wrist[0]), int(wrist[1])), 10, color, 2)
+                        for pt in wrist[3] if len(wrist) > 3 else []:
+                            cv2.circle(panel, (int(pt[0]), int(pt[1])), 4, color, -1)
                     mode_writer.write(panel)
                     panels.append(cv2.resize(panel, cell))
-                if len(panels) == 4:
-                    top = cv2.hconcat(panels[:2])
-                    bot = cv2.hconcat(panels[2:])
-                    compare_writer.write(cv2.vconcat([top, bot]))
+                blank = np.zeros((cell[1], cell[0], 3), np.uint8)
+                while len(panels) % 2:
+                    panels.append(blank)
+                strips = [cv2.hconcat(panels[i : i + 2]) for i in range(0, len(panels), 2)]
+                compare_writer.write(cv2.vconcat(strips))
             frame_id += 1
             pbar.update(1)
 
