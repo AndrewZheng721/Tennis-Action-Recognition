@@ -53,3 +53,27 @@ model = dict(
     ),
     test_cfg=dict(flip_test=True),
 )
+
+dataset_info = dict(
+    dataset_name="racket_pose",
+    keypoint_info={
+        0: dict(name="top", id=0, color=[128, 0, 128], type="upper", swap=""),
+        1: dict(name="bottom", id=1, color=[0, 255, 0], type="lower", swap=""),
+        2: dict(name="handle", id=2, color=[255, 192, 203], type="lower", swap=""),
+        3: dict(name="left", id=3, color=[0, 255, 255], type="upper", swap="right"),
+        4: dict(name="right", id=4, color=[42, 42, 165], type="upper", swap="left"),
+    },
+    skeleton_info={},
+    joint_weights=[1.0, 1.0, 1.0, 1.0, 1.0],
+    sigmas=[0.05, 0.05, 0.05, 0.05, 0.05],
+)
+
+test_pipeline = [
+    dict(type="LoadImage", backend_args=dict(backend="local")),
+    dict(type="GetBBoxCenterScale"),
+    dict(type="TopdownAffine", input_size=codec["input_size"]),
+    dict(type="PackPoseInputs"),
+]
+
+train_dataloader = dict(dataset=dict(metainfo=dataset_info))
+test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=dataset_info))

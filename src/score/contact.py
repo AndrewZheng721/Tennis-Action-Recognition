@@ -219,7 +219,12 @@ def _load_racket():
     torch.load = _load
     try:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        det = init_detector(os.path.join(_CFG, "rtmdet_m_racket_infer.py"), _ckpt("epoch_300.pth"), device=device)
+        det = init_detector(
+            os.path.join(_CFG, "rtmdet_m_racket_infer.py"),
+            _ckpt("epoch_300.pth"),
+            palette="coco",
+            device=device,
+        )
         pose = init_model(os.path.join(_CFG, "rtmpose_m_racket_infer.py"), _ckpt("best_PCK_epoch_90.pth"), device=device)
         det.eval()
         pose.eval()
