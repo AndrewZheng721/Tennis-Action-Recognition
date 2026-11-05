@@ -232,6 +232,9 @@ def _load_racket():
         torch.load = orig
 
     def run(img):
+        from mmengine.registry import init_default_scope
+
+        init_default_scope("mmdet")
         det_result = inference_detector(det, img)
         inst = det_result.pred_instances
         bboxes = inst.bboxes.detach().cpu().numpy()
@@ -247,11 +250,21 @@ def _load_racket():
         pose_results = inference_topdown(pose, img, bboxes)
         out = []
         for i, pred in enumerate(pose_results):
+            kpts = pred.pred_instances.keypoints
+            ks = pred.pred_instances.keypoint_scores
+            if hasattr(kpts, "detach"):
+                kpts = kpts.detach().cpu().numpy()
+                ks = ks.detach().cpu().numpy()
+            kpts = np.asarray(kpts)
+            ks = np.asarray(ks)
+            if kpts.ndim == 3:
+                kpts = kpts[0]
+                ks = ks[0]
             out.append(
                 {
                     "bbox": [float(v) for v in bboxes[i]],
-                    "keypoints": pred.pred_instances.keypoints[0].detach().cpu().numpy(),
-                    "scores": pred.pred_instances.keypoint_scores[0].detach().cpu().numpy(),
+                    "keypoints": kpts,
+                    "scores": ks,
                 }
             )
         return out
@@ -280,6 +293,8 @@ def _mark_racket(flags, poses, fid, uv, players, rackets):
             d = min((x - uv[0]) ** 2 + (y - uv[1]) ** 2 for x, y in pts)
             if d < best_d:
                 best, best_d = (pts, d), d
+        if best is None:
+            continue
         pts, d = best
         span = max(
             max(p[0] for p in pts) - min(p[0] for p in pts),
