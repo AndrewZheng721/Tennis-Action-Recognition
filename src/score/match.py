@@ -172,7 +172,7 @@ def infer_server(players=None, filled=None, bounces=None):
     return "near"
 
 
-def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frames=None):
+def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frames=None, played=None):
     match = Match(server, best_of)
     events = [("bounce", b) for b in bounces] + [("hit", h) for h in (hits or [])]
     events.sort(key=lambda it: int(it[1]["frame_id"]))
@@ -181,16 +181,40 @@ def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frame
     last_side = None
     points = []
 
-    def live(i, fid):
-        if n_frames and fid + confirm >= int(n_frames):
-            return True
-        for kind, nxt in events[i + 1 :]:
-            gap = int(nxt["frame_id"]) - fid
-            if gap > confirm:
-                return False
-            if kind == "hit" or nxt.get("in_singles"):
+    def live(i, fid, side):
+        if played is None:
+            if n_frames and fid + confirm >= int(n_frames):
                 return True
-        return False
+            for kind, nxt in events[i + 1 :]:
+                gap = int(nxt["frame_id"]) - fid
+                if gap > confirm:
+                    return False
+                if kind == "hit" or nxt.get("in_singles"):
+                    return True
+            return False
+        end = fid + confirm + 1
+        for kind, nxt in events[i + 1 :]:
+            nf = int(nxt["frame_id"])
+            if nf <= fid:
+                continue
+            if kind == "bounce":
+                end = min(end, nf)
+                break
+            if nf > fid + confirm:
+                break
+        if end <= fid + 1 or not side:
+            return False
+        hit_ok = False
+        for kind, nxt in events[i + 1 :]:
+            nf = int(nxt["frame_id"])
+            if nf >= end:
+                break
+            if kind == "hit":
+                hit_ok = True
+                break
+        if not hit_ok:
+            return False
+        return any(played(f, side) for f in range(fid + 1, end))
 
     for i, (kind, ev) in enumerate(events):
         if match.done:
@@ -211,7 +235,7 @@ def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frame
                 faults = 0
                 last_side = side
                 continue
-            if live(i, fid):
+            if live(i, fid, side):
                 if inn:
                     phase = "rally"
                     faults = 0
@@ -226,12 +250,12 @@ def play_match(bounces, hits=None, server="near", best_of=3, confirm=45, n_frame
             reason = "双误"
             faults = 0
         elif not inn:
-            if live(i, fid):
+            if live(i, fid, side):
                 continue
             winner = side
             reason = "出界"
         elif last_side and side == last_side:
-            if live(i, fid):
+            if live(i, fid, side):
                 last_side = side
                 continue
             winner = _other(side)
