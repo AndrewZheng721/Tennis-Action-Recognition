@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+outputs/
+*.npz
+*.mp4
+*.avi
+!weights/*.pt

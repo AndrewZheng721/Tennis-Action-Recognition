@@ -1,0 +1,10 @@
+# ---- 第一步: MediaPipe 骨架提取 (纯 CPU) ----
+mediapipe==0.10.9
+opencv-python>=4.8
+numpy>=1.24
+
+# ---- 第二/三步: ViT 特征提取 + 推理 (GPU) ----
+# 按 CUDA 版本从 https://pytorch.org 安装, 开发机为 torch 2.12.0+cu130
+torch>=2.1
+transformers==4.49.0   # Qwen2.5-VL ViT 内部结构与此版本绑定, 请勿升级
+Pillow>=10.0
