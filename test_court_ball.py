@@ -23,6 +23,7 @@ import json
 import os
 
 import cv2
+import numpy as np
 from tqdm import tqdm
 
 from src.ball.tracknet_tracker import create_ball_tracker, default_ball_weights
@@ -33,6 +34,7 @@ from src.court.court_line_detector import (
     read_frame_at,
 )
 from src.score.cntext import put_cn, zone_cn
+from src.score.match import infer_server, play_match
 from src.score.pipeline import analyze_score
 from src.score.players import PlayerTracker, default_person_weights, draw_players, lift_players
 from src.score.traj3d import reconstruct_ball_3d
@@ -80,6 +82,7 @@ def parse_args():
     parser.add_argument("--skip-pose", action="store_true")
     parser.add_argument("--pose-weights", default=None, help="person 检测权重，默认 yolo26m.pt")
     parser.add_argument("--bounce-weights", default=None)
+    parser.add_argument("--ablation", action="store_true", help="四个姿态模型加球拍位置对照")
     return parser.parse_args()
 
 
@@ -140,6 +143,8 @@ def main():
     court_dets = []
     pose_lifted = []
     player_tracker = None
+    ablation = None
+    pose_marks = None
     if not args.skip_pose:
         pose_weights = args.pose_weights or default_person_weights()
         if pose_weights:
@@ -277,9 +282,31 @@ def main():
                     b["side"] = side
                     n_line += 1
                 print("line calls flipped to in:", n_line)
+            server = infer_server(pose_lifted, filled, score["bounces"])
+            score["match"] = play_match(
+                score["bounces"],
+                score.get("hits"),
+                server=server,
+                confirm=max(45, int(round(1.5 * fps))),
+                n_frames=total,
+            )
             with open(os.path.join(args.out, "score.json"), "w", encoding="utf-8") as f:
                 json.dump(score, f, ensure_ascii=False, indent=2)
-            print("bounces:", score["num_bounces"])
+            print("server:", server, "bounces:", score["num_bounces"], "points:", len(score["match"]["points"]), score["match"]["final"])
+            if args.ablation:
+                from src.score.contact import run_ablation
+
+                ablation, pose_marks = run_ablation(
+                    cap,
+                    filled,
+                    pose_lifted,
+                    score["bounces"],
+                    score.get("hits"),
+                    server,
+                    max(45, int(round(1.5 * fps))),
+                    total,
+                    args.out,
+                )
         traj3d = None
         if not args.skip_3d:
             traj3d = reconstruct_ball_3d(
@@ -306,6 +333,24 @@ def main():
         fps,
         (width, height),
     )
+    mode_writers = {}
+    compare_writer = None
+    if ablation:
+        for mode in ablation["modes"]:
+            mode_writers[mode] = cv2.VideoWriter(
+                os.path.join(args.out, f"overlay_{mode}.mp4"),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                fps,
+                (width, height),
+            )
+        cols = 2
+        compare_rows = (len(ablation["modes"]) + cols - 1) // cols
+        compare_writer = cv2.VideoWriter(
+            os.path.join(args.out, "overlay_compare.mp4"),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width // 2 * cols, height // 2 * compare_rows),
+        )
     trail = []
     shot_set = set(shot_frames)
     bounce_map = {}
@@ -374,6 +419,11 @@ def main():
                     last_event_fid = frame_id
                 if last_event and frame_id - last_event_fid <= 45:
                     put_cn(vis, last_event, (20, 150), (0, 255, 255), 0.85, 2)
+                if score and score.get("match") and ablation is None:
+                    nxt = next((p for p in score["match"]["points"] if p["frame_id"] > frame_id), None)
+                    line = nxt["before"] if nxt else score["match"]["final"]
+                    mark = nxt["tag"] if nxt else ""
+                    put_cn(vis, f"{line}  {mark}".strip(), (20, 78), (0, 255, 255), 0.7, 2)
             else:
                 cv2.putText(
                     vis,
@@ -388,11 +438,51 @@ def main():
                 cv2.imwrite(os.path.join(args.out, "overlay_first.jpg"), vis)
                 first_saved = True
             writer.write(vis)
+            if mode_writers:
+                panels = []
+                cell = (width // 2, height // 2)
+                for mode, mode_writer in mode_writers.items():
+                    panel = vis.copy()
+                    row = ablation["modes"][mode]
+                    nxt = next((p for p in row["match"]["points"] if p["frame_id"] > frame_id), None)
+                    line = nxt["before"] if nxt else row["final"]
+                    mark = nxt["tag"] if nxt else ""
+                    put_cn(panel, f"{mode}  {line}  {mark}".strip(), (20, 78), (0, 255, 255), 0.7, 2)
+                    for side, wrist in (pose_marks.get(mode, {}).get(frame_id) or {}).items():
+                        color = (0, 255, 0) if wrist[2] else (0, 255, 255)
+                        cv2.circle(panel, (int(wrist[0]), int(wrist[1])), 10, color, 2)
+                        for pt in wrist[3] if len(wrist) > 3 else []:
+                            cv2.circle(panel, (int(pt[0]), int(pt[1])), 4, color, -1)
+                    mode_writer.write(panel)
+                    panels.append(cv2.resize(panel, cell))
+                blank = np.zeros((cell[1], cell[0], 3), np.uint8)
+                while len(panels) % 2:
+                    panels.append(blank)
+                strips = [cv2.hconcat(panels[i : i + 2]) for i in range(0, len(panels), 2)]
+                compare_writer.write(cv2.vconcat(strips))
             frame_id += 1
             pbar.update(1)
 
     cap.release()
     writer.release()
+    for mode_writer in mode_writers.values():
+        mode_writer.release()
+    if compare_writer is not None:
+        compare_writer.release()
+        compare_path = os.path.join(args.out, "contact_compare.csv")
+        with open(compare_path, "w", encoding="utf-8", newline="") as f:
+            f.write("mode,near,far,points,final,reasons,video\n")
+            for mode, row in ablation["modes"].items():
+                reasons = " ".join(row["reasons"])
+                final = row["final"].replace(",", " ")
+                f.write(
+                    f"{mode},{row['contact_frames']['near']},{row['contact_frames']['far']},"
+                    f"{row['points']},{final},{reasons},overlay_{mode}.mp4\n"
+                )
+        print("compare:", compare_path)
+        print("overlay_compare:", os.path.join(args.out, "overlay_compare.mp4"))
+        for mode in ablation["modes"]:
+            print("overlay:", os.path.join(args.out, f"overlay_{mode}.mp4"))
     print("overlay:", overlay_path)
     print("preview:", os.path.join(args.out, "overlay_first.jpg"))
     if traj3d is not None:

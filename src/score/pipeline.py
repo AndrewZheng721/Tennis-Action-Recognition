@@ -101,7 +101,7 @@ def _eventnet_path() -> Optional[str]:
     return None
 
 
-def _eventnet_bounce_ids(filled, players):
+def _eventnet_pred(filled, players):
     path = _eventnet_path()
     if not path:
         return None
@@ -119,8 +119,7 @@ def _eventnet_bounce_ids(filled, players):
     if players:
         packed = {"frames": [{"frame_id": i, "players": pl} for i, pl in enumerate(players)]}
     model = load_eventnet(path)
-    pred = predict_status(model, df, packed)
-    return [i for i, s in enumerate(pred) if int(s) == 2]
+    return predict_status(model, df, packed)
 
 
 def analyze_score(
@@ -132,15 +131,15 @@ def analyze_score(
     players=None,
     shot_frames: Optional[List[int]] = None,
 ):
-    net_ids = _eventnet_bounce_ids(filled, players)
-    use_net = net_ids is not None
+    pred = _eventnet_pred(filled, players)
+    use_net = pred is not None
     if use_net:
-        bounce_ids = set(net_ids)
-        hit_ids = set()
+        bounce_ids = {i for i, s in enumerate(pred) if int(s) == 2}
+        hit_ids = [{"frame_id": int(i)} for i, s in enumerate(pred) if int(s) == 1]
     else:
         bounce_ids = set(detect_bounces(filled, bounce_weights))
         xs, ys = _centers(filled)
-        hit_ids = set(_geom_bounces(xs, ys, min_gap=6))
+        hit_ids = [{"frame_id": int(i)} for i in _geom_bounces(xs, ys, min_gap=6)]
     bounces = []
     cam = None
     last = -999
@@ -149,7 +148,8 @@ def analyze_score(
     min_gap = max(10, int(round(0.33 * float(fps or 30))))
     seen = set()
     n = len(filled)
-    for raw_fid in sorted(bounce_ids | hit_ids):
+    geom_hits = {h["frame_id"] for h in hit_ids} if not use_net else set()
+    for raw_fid in sorted(bounce_ids | geom_hits):
         if raw_fid < 0 or raw_fid >= n:
             continue
         det = court_dets[raw_fid] if court_dets and raw_fid < len(court_dets) else None
@@ -199,4 +199,5 @@ def analyze_score(
         "fps": float(fps),
         "num_bounces": len(bounces),
         "bounces": bounces,
+        "hits": hit_ids,
     }
