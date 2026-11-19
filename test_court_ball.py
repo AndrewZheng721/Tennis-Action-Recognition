@@ -83,6 +83,7 @@ def parse_args():
     parser.add_argument("--pose-weights", default=None, help="person 检测权重，默认 yolo26m.pt")
     parser.add_argument("--bounce-weights", default=None)
     parser.add_argument("--ablation", action="store_true", help="四个姿态模型加球拍位置对照")
+    parser.add_argument("--action", action="store_true", help="ViTPose 骨架并判断准备/正手/反手/发球/截击")
     return parser.parse_args()
 
 
@@ -145,6 +146,8 @@ def main():
     player_tracker = None
     ablation = None
     pose_marks = None
+    actions = None
+    action_kpts = None
     if not args.skip_pose:
         pose_weights = args.pose_weights or default_person_weights()
         if pose_weights:
@@ -227,6 +230,17 @@ def main():
             n_near = sum(1 for fr in pose_lifted if any(p.get("side") == "near" for p in fr))
             n_far = sum(1 for fr in pose_lifted if any(p.get("side") == "far" for p in fr))
             print("person frames near/far:", n_near, n_far, "/", len(pose_lifted))
+        if args.action and pose_lifted:
+            from src.score.action import LABELS, run_actions
+
+            actions, action_kpts = run_actions(cap, pose_lifted)
+            counts = {k: 0 for k in LABELS}
+            for row in actions:
+                for lab in row.values():
+                    counts[lab] = counts.get(lab, 0) + 1
+            with open(os.path.join(args.out, "actions.json"), "w", encoding="utf-8") as f:
+                json.dump({"labels": list(LABELS), "counts": counts, "frames": actions}, f, ensure_ascii=False)
+            print("action:", counts)
         score = None
         if not args.skip_score:
             score = analyze_score(
@@ -381,6 +395,14 @@ def main():
                 vis = court_detector.draw(vis, live)
             if frame_id < len(pose_lifted):
                 vis = draw_players(vis, pose_lifted[frame_id])
+            if actions is not None and frame_id < len(actions):
+                from src.score.action import draw_actions
+
+                vis = draw_actions(
+                    vis,
+                    action_kpts[frame_id] if action_kpts is not None and frame_id < len(action_kpts) else None,
+                    actions[frame_id],
+                )
             box = None
             if filled is not None and frame_id < len(filled):
                 box = filled[frame_id].get(1)
