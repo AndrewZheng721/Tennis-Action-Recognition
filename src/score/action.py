@@ -26,7 +26,35 @@ def _device():
         return "cpu"
 
 
+def _preload_cudnn():
+    import ctypes
+    import glob
+    import os
+
+    try:
+        import nvidia
+    except ImportError:
+        return
+    base = os.path.dirname(nvidia.__file__)
+    paths = glob.glob(os.path.join(base, "*", "lib", "lib*.so*"))
+    order = ("nvjitlink", "cudart", "cublas", "cufft", "curand", "cusparse", "cusolver", "nvrtc", "cudnn")
+
+    def key(path):
+        name = os.path.basename(path)
+        for i, token in enumerate(order):
+            if token in name:
+                return (i, name)
+        return (len(order), name)
+
+    for path in sorted(set(paths), key=key):
+        try:
+            ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            pass
+
+
 def _load_vitpose():
+    _preload_cudnn()
     from rtmlib import ViTPose
 
     kw = dict(onnx_model=_VITPOSE, model_input_size=(192, 256), to_openpose=False, backend="onnxruntime")
